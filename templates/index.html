@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>YouTube Karaoke Splitter</title>
+    <style>
+      :root {
+        --bg: #f4f0e8;
+        --panel: #fff9ee;
+        --ink: #1f2937;
+        --accent: #c2410c;
+        --accent-dark: #9a3412;
+        --ok: #166534;
+        --err: #b91c1c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, #fde68a 0%, transparent 35%),
+          radial-gradient(circle at bottom right, #fed7aa 0%, transparent 40%),
+          var(--bg);
+        display: grid;
+        place-items: center;
+        padding: 1rem;
+      }
+
+      .card {
+        width: min(640px, 100%);
+        background: var(--panel);
+        border: 2px solid #fb923c;
+        border-radius: 16px;
+        padding: 1.25rem;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.1);
+      }
+
+      h1 {
+        margin-top: 0;
+        line-height: 1.1;
+        font-size: clamp(1.4rem, 4vw, 2rem);
+      }
+
+      form {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      input {
+        width: 100%;
+        padding: 0.75rem;
+        border-radius: 10px;
+        border: 1px solid #d6d3d1;
+        font-size: 1rem;
+      }
+
+      button {
+        width: fit-content;
+        border: 0;
+        border-radius: 10px;
+        padding: 0.7rem 1rem;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-dark);
+      }
+
+      .result {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px dashed #fb923c;
+      }
+
+      .ok {
+        color: var(--ok);
+      }
+
+      .error {
+        color: var(--err);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>YouTube Karaoke Splitter</h1>
+      <p>Paste a YouTube link or 11-character video ID to create and save a karaoke MP3.</p>
+
+      <form id="split-form">
+        <input
+          id="video"
+          name="video"
+          placeholder="https://www.youtube.com/watch?v=... or dQw4w9WgXcQ"
+          value="dQw4w9WgXcQ"
+          required
+        >
+        <button type="submit">Create Karaoke MP3</button>
+      </form>
+
+      <p id="status" aria-live="polite">Checking separation status...</p>
+
+      <section class="result" id="result" hidden>
+        <p id="message"></p>
+        <audio id="player" controls hidden></audio>
+        <p><a id="download" href="#" hidden>Download karaoke MP3</a></p>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("split-form");
+      const videoInput = document.getElementById("video");
+      const status = document.getElementById("status");
+      const result = document.getElementById("result");
+      const message = document.getElementById("message");
+      const player = document.getElementById("player");
+      const download = document.getElementById("download");
+
+      async function readJsonSafe(response) {
+        const raw = await response.text();
+        if (!raw) {
+          return {};
+        }
+
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return { error: `Unexpected response from server (HTTP ${response.status})` };
+        }
+      }
+
+      async function updateStatus(rawValue) {
+        const value = rawValue.trim();
+        if (!value) {
+          status.className = "";
+          status.textContent = "Enter a video ID or URL to check separation status.";
+          return;
+        }
+
+        const candidate = value.includes("/") || value.includes("?")
+          ? new URL(value, window.location.origin).searchParams.get("v") || value
+          : value;
+
+        if (candidate.length !== 11) {
+          status.className = "error";
+          status.textContent = "Separation status: provide a valid 11-character video ID.";
+          return;
+        }
+
+        status.className = "";
+        status.textContent = `Checking separation status for ${candidate}...`;
+
+        try {
+          const response = await fetch(`/api/status/${encodeURIComponent(candidate)}`);
+          const data = await readJsonSafe(response);
+          if (!response.ok) {
+            throw new Error(data.error || `Could not check separation status (HTTP ${response.status})`);
+          }
+
+          status.className = data.available ? "ok" : "";
+          status.textContent = data.available
+            ? `Separation status for ${data.video_id}: available.`
+            : `Separation status for ${data.video_id}: not generated yet.`;
+        } catch (error) {
+          status.className = "error";
+          status.textContent = error.message;
+        }
+      }
+
+      updateStatus(videoInput.value);
+      videoInput.addEventListener("change", () => updateStatus(videoInput.value));
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.hidden = false;
+        player.hidden = true;
+        download.hidden = true;
+        message.className = "";
+        message.textContent = "Processing video. This can take a minute...";
+
+        const video = videoInput.value.trim();
+
+        try {
+          const response = await fetch("/api/process", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ video }),
+          });
+
+          const data = await readJsonSafe(response);
+          if (!response.ok) {
+            throw new Error(data.error || `Processing failed (HTTP ${response.status})`);
+          }
+
+          message.className = "ok";
+          message.textContent = `Ready: ${data.video_id}`;
+          download.href = data.karaoke_url;
+          download.hidden = false;
+          player.src = data.karaoke_url;
+          player.hidden = false;
+        } catch (error) {
+          message.className = "error";
+          message.textContent = error.message;
+        }
+      });
+    </script>
+  </body>
+</html>
